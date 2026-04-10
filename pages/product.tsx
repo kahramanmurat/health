@@ -8,6 +8,10 @@ import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { Protect, PricingTable, UserButton } from '@clerk/nextjs';
+import Link from 'next/link';
+import { trackConsultation } from '../lib/analytics';
+import { downloadFHIRBundle } from '../lib/fhir-export';
+import { getCustomTemplates, saveCustomTemplate, removeCustomTemplate, exportTemplatePack, importTemplatePack } from '../lib/template-sharing';
 
 const SPECIALTIES = [
     'General Practice',
@@ -112,9 +116,17 @@ function ConsultationForm() {
 
     // Template state
     const [showTemplates, setShowTemplates] = useState(false);
-    const templates = TEMPLATES[specialty] || [];
+    const [customTemplates, setCustomTemplates] = useState<Record<string, { name: string; notes: string }[]>>({});
+    const [showSaveTemplate, setShowSaveTemplate] = useState(false);
+    const [newTemplateName, setNewTemplateName] = useState('');
+    const importRef = useRef<HTMLInputElement>(null);
+
+    const builtInTemplates = TEMPLATES[specialty] || [];
+    const userTemplates = customTemplates[specialty] || [];
+    const templates = [...builtInTemplates, ...userTemplates];
 
     useEffect(() => {
+        setCustomTemplates(getCustomTemplates());
         return () => {
             if (recognitionRef.current) {
                 recognitionRef.current.stop();
@@ -195,6 +207,7 @@ function ConsultationForm() {
 
         const controller = new AbortController();
         let buffer = '';
+        const startTime = Date.now();
 
         const apiUrl = process.env.NODE_ENV === 'development' ? 'http://localhost:8000/api' : '/api';
         await fetchEventSource(apiUrl, {
@@ -223,6 +236,12 @@ function ConsultationForm() {
             },
             onclose() {
                 setLoading(false);
+                trackConsultation({
+                    specialty,
+                    urgency,
+                    emailLanguage,
+                    generationTimeMs: Date.now() - startTime,
+                });
             },
             onerror(err) {
                 console.error('SSE error:', err);
@@ -280,11 +299,60 @@ function ConsultationForm() {
         printWindow.print();
     }
 
+    function handleSaveTemplate() {
+        if (!newTemplateName.trim() || !notes.trim()) return;
+        saveCustomTemplate(specialty, { name: newTemplateName.trim(), notes });
+        setCustomTemplates(getCustomTemplates());
+        setNewTemplateName('');
+        setShowSaveTemplate(false);
+    }
+
+    function handleRemoveTemplate(name: string) {
+        removeCustomTemplate(specialty, name);
+        setCustomTemplates(getCustomTemplates());
+    }
+
+    function handleExportTemplates() {
+        exportTemplatePack(specialty, 'MediNotes User', userTemplates);
+    }
+
+    async function handleImportTemplates(e: React.ChangeEvent<HTMLInputElement>) {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        try {
+            const pack = await importTemplatePack(file);
+            setCustomTemplates(getCustomTemplates());
+            alert(`Imported ${pack.templates.length} templates for ${pack.specialty}`);
+        } catch (err) {
+            alert('Failed to import templates: ' + (err as Error).message);
+        }
+        e.target.value = '';
+    }
+
+    function handleFHIRExport() {
+        downloadFHIRBundle({
+            patientName,
+            dateOfVisit: visitDate?.toISOString().slice(0, 10) || '',
+            specialty,
+            urgency,
+            notes,
+            summary: output,
+        });
+    }
+
     return (
         <div className="container mx-auto px-4 py-12 max-w-3xl">
-            <h1 className="text-4xl font-bold text-gray-900 dark:text-gray-100 mb-8">
-                Consultation Notes
-            </h1>
+            <div className="flex items-center justify-between mb-8">
+                <h1 className="text-4xl font-bold text-gray-900 dark:text-gray-100">
+                    Consultation Notes
+                </h1>
+                <Link
+                    href="/analytics"
+                    className="text-sm text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                >
+                    View Analytics
+                </Link>
+            </div>
 
             <form onSubmit={handleSubmit} className="space-y-6 bg-white dark:bg-gray-800 rounded-xl shadow-lg p-8">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -410,30 +478,100 @@ function ConsultationForm() {
                     </div>
 
                     {/* Template selector */}
-                    {showTemplates && templates.length > 0 && (
+                    {showTemplates && (
                         <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3 space-y-2">
-                            <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
-                                Select a template for {specialty}:
-                            </p>
-                            {templates.map((t) => (
-                                <button
-                                    key={t.name}
-                                    type="button"
-                                    onClick={() => applyTemplate(t)}
-                                    className="block w-full text-left px-3 py-2 rounded-md bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-700 text-sm text-gray-700 dark:text-gray-300 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors"
-                                >
-                                    <span className="font-medium">{t.name}</span>
-                                    <span className="block text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
-                                        {t.notes.slice(0, 80)}...
-                                    </span>
-                                </button>
-                            ))}
+                            <div className="flex items-center justify-between">
+                                <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
+                                    Templates for {specialty}:
+                                </p>
+                                <div className="flex gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowSaveTemplate(!showSaveTemplate)}
+                                        className="text-xs px-2 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200"
+                                    >
+                                        + Save Current
+                                    </button>
+                                    {userTemplates.length > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={handleExportTemplates}
+                                            className="text-xs px-2 py-1 rounded bg-purple-100 text-purple-700 hover:bg-purple-200"
+                                        >
+                                            Export
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => importRef.current?.click()}
+                                        className="text-xs px-2 py-1 rounded bg-orange-100 text-orange-700 hover:bg-orange-200"
+                                    >
+                                        Import
+                                    </button>
+                                    <input
+                                        ref={importRef}
+                                        type="file"
+                                        accept=".json"
+                                        className="hidden"
+                                        onChange={handleImportTemplates}
+                                    />
+                                </div>
+                            </div>
+                            {showSaveTemplate && (
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        placeholder="Template name..."
+                                        value={newTemplateName}
+                                        onChange={(e) => setNewTemplateName(e.target.value)}
+                                        className="flex-1 px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-md dark:bg-gray-700 dark:text-white"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={handleSaveTemplate}
+                                        className="text-xs px-3 py-1 rounded bg-green-600 text-white hover:bg-green-700"
+                                    >
+                                        Save
+                                    </button>
+                                </div>
+                            )}
+                            {templates.length === 0 ? (
+                                <p className="text-xs text-gray-500 py-2">No templates yet. Save your current notes or import a template pack.</p>
+                            ) : (
+                                templates.map((t) => {
+                                    const isCustom = userTemplates.some(ut => ut.name === t.name);
+                                    return (
+                                        <div
+                                            key={t.name}
+                                            className="flex items-start gap-2"
+                                        >
+                                            <button
+                                                type="button"
+                                                onClick={() => applyTemplate(t)}
+                                                className="flex-1 text-left px-3 py-2 rounded-md bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-700 text-sm text-gray-700 dark:text-gray-300 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors"
+                                            >
+                                                <span className="font-medium">
+                                                    {t.name}
+                                                    {isCustom && <span className="ml-1 text-xs text-purple-500">(custom)</span>}
+                                                </span>
+                                                <span className="block text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
+                                                    {t.notes.slice(0, 80)}...
+                                                </span>
+                                            </button>
+                                            {isCustom && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleRemoveTemplate(t.name)}
+                                                    className="mt-2 text-xs text-red-500 hover:text-red-700"
+                                                >
+                                                    x
+                                                </button>
+                                            )}
+                                        </div>
+                                    );
+                                })
+                            )}
                         </div>
-                    )}
-                    {showTemplates && templates.length === 0 && (
-                        <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
-                            No templates available for {specialty} yet.
-                        </p>
                     )}
 
                     {isListening && (
@@ -484,6 +622,12 @@ function ConsultationForm() {
                             className="inline-flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
                         >
                             Print / Save PDF
+                        </button>
+                        <button
+                            onClick={handleFHIRExport}
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-lg text-sm font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
+                        >
+                            Export FHIR (EHR)
                         </button>
                     </div>
 
