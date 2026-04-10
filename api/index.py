@@ -25,6 +25,7 @@ class Visit(BaseModel):
     notes: str
     specialty: str = "General Practice"
     urgency: str = "routine"
+    email_language: str = "English"
 
 
 default_system_prompt = """
@@ -84,12 +85,14 @@ Reply with exactly three sections with the headings:
 }
 
 
-def get_system_prompt(specialty: str, urgency: str) -> str:
+def get_system_prompt(specialty: str, urgency: str, email_language: str) -> str:
     base = specialty_prompts.get(specialty, default_system_prompt)
     if urgency == "urgent":
         base += "\nNote: This is an URGENT case. Prioritize immediate action items and flag time-sensitive follow-ups."
     elif urgency == "emergency":
         base += "\nNote: This is an EMERGENCY case. Highlight critical actions required immediately and escalation steps."
+    if email_language != "English":
+        base += f"\nIMPORTANT: Write the patient email section in {email_language}. Keep the summary and next steps in English."
     return base
 
 
@@ -110,7 +113,7 @@ def consultation_summary(
 ):
     client = OpenAI()
 
-    sys_prompt = get_system_prompt(visit.specialty, visit.urgency)
+    sys_prompt = get_system_prompt(visit.specialty, visit.urgency, visit.email_language)
     user_prompt = user_prompt_for(visit)
 
     prompt = [

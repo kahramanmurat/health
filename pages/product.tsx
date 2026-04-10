@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, FormEvent } from 'react';
+import { useState, useRef, useEffect, FormEvent } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import DatePicker from 'react-datepicker';
 import ReactMarkdown from 'react-markdown';
@@ -24,6 +24,71 @@ const URGENCY_LEVELS = [
     { value: 'emergency', label: 'Emergency', color: 'bg-red-100 text-red-800 border-red-300' },
 ];
 
+const LANGUAGES = [
+    'English', 'Spanish', 'French', 'German', 'Portuguese',
+    'Chinese', 'Japanese', 'Korean', 'Arabic', 'Hindi',
+    'Turkish', 'Russian', 'Italian', 'Dutch', 'Polish',
+];
+
+const TEMPLATES: Record<string, { name: string; notes: string }[]> = {
+    'General Practice': [
+        {
+            name: 'Annual Physical',
+            notes: 'Annual wellness exam. Vitals: BP 120/80, HR 72, Temp 98.6F. BMI 24.5. General appearance normal. Heart and lungs clear. No abnormalities noted. Labs ordered: CBC, CMP, Lipid panel, A1C. Due for flu vaccine and tetanus booster.',
+        },
+        {
+            name: 'Upper Respiratory Infection',
+            notes: 'Patient presents with 3-day history of nasal congestion, sore throat, mild cough. No fever. Lungs clear bilateral. Throat mildly erythematous. No exudates. Likely viral URI. Recommend rest, fluids, OTC symptomatic relief. Return if symptoms worsen or fever develops.',
+        },
+        {
+            name: 'Hypertension Follow-up',
+            notes: 'Follow-up for hypertension management. Current meds: Lisinopril 10mg daily. BP today 138/88. Home readings averaging 135/85. Discussed lifestyle modifications including sodium restriction and exercise. Increasing Lisinopril to 20mg daily. Recheck in 4 weeks.',
+        },
+    ],
+    'Cardiology': [
+        {
+            name: 'Chest Pain Evaluation',
+            notes: 'Patient reports intermittent chest tightness with exertion, relieved by rest. No radiation to arm or jaw. No shortness of breath at rest. ECG shows normal sinus rhythm, no ST changes. Troponin negative. Ordering stress test and echocardiogram. Started on aspirin 81mg daily.',
+        },
+        {
+            name: 'Heart Failure Follow-up',
+            notes: 'CHF follow-up. NYHA Class II. Current meds: Metoprolol 50mg BID, Lisinopril 20mg, Furosemide 40mg. Weight stable. No peripheral edema. Lungs clear. BNP 250. Echo shows EF 35%, unchanged. Continue current regimen. Consider adding spironolactone.',
+        },
+    ],
+    'Pediatrics': [
+        {
+            name: 'Well-Child Visit (2 years)',
+            notes: 'Well-child visit, 2-year-old. Weight 28 lbs (50th percentile), Height 34 inches (55th percentile). Meeting developmental milestones: speaks 50+ words, runs well, kicks ball. Immunizations up to date. Administered Hep A vaccine. Normal exam. Next visit at 30 months.',
+        },
+        {
+            name: 'Ear Infection',
+            notes: 'Child presents with right ear pain x2 days, low-grade fever 100.4F. Right TM erythematous and bulging. Left ear clear. Throat normal. Diagnosis: acute otitis media, right ear. Prescribed Amoxicillin 250mg TID x10 days. Tylenol for pain. Follow up if no improvement in 48-72 hours.',
+        },
+    ],
+    'Psychiatry': [
+        {
+            name: 'Depression Follow-up',
+            notes: 'Follow-up for major depressive disorder. PHQ-9 score: 12 (moderate). Patient reports improved sleep with trazodone but persistent low mood and anhedonia. Currently on Sertraline 100mg. Increasing to 150mg. Continue weekly therapy. No suicidal ideation. Safety plan reviewed.',
+        },
+        {
+            name: 'Anxiety Assessment',
+            notes: 'Initial evaluation for generalized anxiety. GAD-7 score: 15 (severe). Patient reports persistent worry, difficulty concentrating, muscle tension, poor sleep for 6+ months. No panic attacks. No substance use. Starting Buspirone 5mg TID, titrate to 10mg TID. Referral for CBT.',
+        },
+    ],
+    'Orthopedics': [
+        {
+            name: 'Knee Pain Evaluation',
+            notes: 'Right knee pain x6 weeks, worse with stairs and prolonged sitting. No locking or giving way. Exam: mild effusion, positive patellar grind test, full ROM. McMurray negative. X-ray shows mild patellofemoral joint narrowing. Diagnosis: patellofemoral syndrome. PT referral, NSAIDs, quad strengthening exercises.',
+        },
+    ],
+    'Dermatology': [
+        {
+            name: 'Suspicious Mole',
+            notes: 'Patient presents with changing mole on upper back. Lesion 8mm, asymmetric, irregular borders, variegated color (brown/black). ABCDE criteria positive. Performed shave biopsy, sent to pathology. Discussed sun protection. Will call with results in 5-7 business days.',
+        },
+    ],
+};
+
 function ConsultationForm() {
     const { getToken } = useAuth();
 
@@ -33,6 +98,7 @@ function ConsultationForm() {
     const [notes, setNotes] = useState('');
     const [specialty, setSpecialty] = useState('General Practice');
     const [urgency, setUrgency] = useState<string>('routine');
+    const [emailLanguage, setEmailLanguage] = useState('English');
 
     // Streaming state
     const [output, setOutput] = useState('');
@@ -40,10 +106,85 @@ function ConsultationForm() {
     const [copied, setCopied] = useState(false);
     const outputRef = useRef<HTMLDivElement>(null);
 
+    // Voice input state
+    const [isListening, setIsListening] = useState(false);
+    const recognitionRef = useRef<SpeechRecognition | null>(null);
+
+    // Template state
+    const [showTemplates, setShowTemplates] = useState(false);
+    const templates = TEMPLATES[specialty] || [];
+
+    useEffect(() => {
+        return () => {
+            if (recognitionRef.current) {
+                recognitionRef.current.stop();
+            }
+        };
+    }, []);
+
+    function toggleVoiceInput() {
+        if (isListening) {
+            recognitionRef.current?.stop();
+            setIsListening(false);
+            return;
+        }
+
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            alert('Voice input is not supported in this browser. Try Chrome or Edge.');
+            return;
+        }
+
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+
+        let finalTranscript = notes;
+
+        recognition.onresult = (event: SpeechRecognitionEvent) => {
+            let interim = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcript = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    finalTranscript += (finalTranscript ? ' ' : '') + transcript;
+                    setNotes(finalTranscript);
+                } else {
+                    interim += transcript;
+                }
+            }
+            if (interim) {
+                setNotes(finalTranscript + (finalTranscript ? ' ' : '') + interim);
+            }
+        };
+
+        recognition.onerror = () => {
+            setIsListening(false);
+        };
+
+        recognition.onend = () => {
+            setIsListening(false);
+        };
+
+        recognitionRef.current = recognition;
+        recognition.start();
+        setIsListening(true);
+    }
+
+    function applyTemplate(template: { name: string; notes: string }) {
+        setNotes(template.notes);
+        setShowTemplates(false);
+    }
+
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
         setOutput('');
         setLoading(true);
+
+        if (isListening) {
+            recognitionRef.current?.stop();
+            setIsListening(false);
+        }
 
         const jwt = await getToken();
         if (!jwt) {
@@ -69,6 +210,7 @@ function ConsultationForm() {
                 notes,
                 specialty,
                 urgency,
+                email_language: emailLanguage,
             }),
             onmessage(ev) {
                 if (ev.data === '[DONE]') return;
@@ -217,10 +359,90 @@ function ConsultationForm() {
                     </div>
                 </div>
 
+                {/* Email Language */}
                 <div className="space-y-2">
-                    <label htmlFor="notes" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                        Consultation Notes
+                    <label htmlFor="language" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Patient Email Language
                     </label>
+                    <select
+                        id="language"
+                        value={emailLanguage}
+                        onChange={(e) => setEmailLanguage(e.target.value)}
+                        className="w-full md:w-1/2 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+                    >
+                        {LANGUAGES.map((lang) => (
+                            <option key={lang} value={lang}>{lang}</option>
+                        ))}
+                    </select>
+                    {emailLanguage !== 'English' && (
+                        <p className="text-xs text-blue-600 dark:text-blue-400">
+                            Summary and next steps will remain in English. Patient email will be in {emailLanguage}.
+                        </p>
+                    )}
+                </div>
+
+                {/* Notes with voice input and templates */}
+                <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                        <label htmlFor="notes" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                            Consultation Notes
+                        </label>
+                        <div className="flex gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setShowTemplates(!showTemplates)}
+                                className="text-xs px-3 py-1 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                            >
+                                Templates
+                            </button>
+                            <button
+                                type="button"
+                                onClick={toggleVoiceInput}
+                                className={`text-xs px-3 py-1 rounded-md transition-colors ${
+                                    isListening
+                                        ? 'bg-red-100 text-red-700 animate-pulse'
+                                        : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                                }`}
+                            >
+                                {isListening ? 'Stop Dictation' : 'Dictate'}
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Template selector */}
+                    {showTemplates && templates.length > 0 && (
+                        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3 space-y-2">
+                            <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
+                                Select a template for {specialty}:
+                            </p>
+                            {templates.map((t) => (
+                                <button
+                                    key={t.name}
+                                    type="button"
+                                    onClick={() => applyTemplate(t)}
+                                    className="block w-full text-left px-3 py-2 rounded-md bg-white dark:bg-gray-800 border border-blue-200 dark:border-blue-700 text-sm text-gray-700 dark:text-gray-300 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors"
+                                >
+                                    <span className="font-medium">{t.name}</span>
+                                    <span className="block text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
+                                        {t.notes.slice(0, 80)}...
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                    {showTemplates && templates.length === 0 && (
+                        <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
+                            No templates available for {specialty} yet.
+                        </p>
+                    )}
+
+                    {isListening && (
+                        <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
+                            <span className="inline-block w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+                            Listening... Speak your consultation notes.
+                        </div>
+                    )}
+
                     <textarea
                         id="notes"
                         required
@@ -228,7 +450,7 @@ function ConsultationForm() {
                         value={notes}
                         onChange={(e) => setNotes(e.target.value)}
                         className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
-                        placeholder="Enter detailed consultation notes..."
+                        placeholder="Enter detailed consultation notes or use dictation..."
                     />
                 </div>
 
