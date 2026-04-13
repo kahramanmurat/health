@@ -1,9 +1,7 @@
 import json
 import os
-from pathlib import Path
 from fastapi import FastAPI, Depends
-from fastapi.responses import StreamingResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi_clerk_auth import ClerkConfig, ClerkHTTPBearer, HTTPAuthorizationCredentials
@@ -156,11 +154,3 @@ def health_check():
     return {"status": "healthy"}
 
 
-# Serve static files (our Next.js export) - MUST BE LAST!
-static_path = Path("static")
-if static_path.exists():
-    @app.get("/")
-    async def serve_root():
-        return FileResponse(static_path / "index.html")
-
-    app.mount("/", StaticFiles(directory="static", html=True), name="static")

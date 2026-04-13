@@ -1,47 +1,48 @@
-# Stage 1: Build the Next.js static files
+# Stage 1: Build the Next.js app
 FROM node:22-alpine AS frontend-builder
 
 WORKDIR /app
 
-# Copy package files first (for better caching)
 COPY package*.json ./
 RUN npm ci
 
-# Copy all frontend files
 COPY . .
 
-# Build argument for Clerk public key
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 
-# Note: Docker may warn about "secrets in ARG/ENV" - this is OK!
-# The NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is meant to be public (it starts with pk_)
-# It's safe to include in the build as it's designed for client-side use
-
-# Build the Next.js app (creates 'out' directory with static files)
 RUN npm run build
 
-# Stage 2: Create the final Python container
-FROM python:3.12-slim
+# Stage 2: Production image with Node.js + Python
+FROM node:22-slim
 
 WORKDIR /app
 
+# Install Python
+RUN apt-get update && apt-get install -y python3 python3-pip python3-venv && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements.txt
 
-# Copy the FastAPI server
-COPY api/server.py .
+# Copy FastAPI server
+COPY api/server.py ./api/
 
-# Copy the Next.js static export from builder stage
-COPY --from=frontend-builder /app/out ./static
+# Copy Next.js build output and dependencies
+COPY --from=frontend-builder /app/.next ./.next
+COPY --from=frontend-builder /app/node_modules ./node_modules
+COPY --from=frontend-builder /app/package.json ./
+COPY --from=frontend-builder /app/next.config.ts ./
+COPY --from=frontend-builder /app/public ./public
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+# Copy startup script
+COPY start.sh .
+RUN chmod +x start.sh
 
-# Expose port 8000 (FastAPI will serve everything)
-EXPOSE 8000
+EXPOSE 3000
 
-# Start the FastAPI server
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://localhost:3000').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"
+
+CMD ["./start.sh"]
