@@ -312,7 +312,7 @@ function ConsultationForm() {
     }
 
     function handleExportTemplates() {
-        exportTemplatePack(specialty, 'MediNotes User', userTemplates);
+        exportTemplatePack(specialty, 'ScribeMD User', userTemplates);
     }
 
     async function handleImportTemplates(e: React.ChangeEvent<HTMLInputElement>) {
