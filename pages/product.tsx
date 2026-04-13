@@ -209,8 +209,7 @@ function ConsultationForm() {
         let buffer = '';
         const startTime = Date.now();
 
-        const apiUrl = process.env.NODE_ENV === 'development' ? 'http://localhost:8000/api' : '/api';
-        await fetchEventSource(apiUrl, {
+        await fetchEventSource('/api/consultation', {
             signal: controller.signal,
             method: 'POST',
             headers: {
